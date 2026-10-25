@@ -2,7 +2,7 @@ export async function POST(request) {
   try {
     const { text, situation, tone } = await request.json();
 
-    if (!text || !text.trim()) {
+    if (!text || typeof text !== "string" || !text.trim()) {
       return Response.json(
         { error: "변환할 문장을 입력해 주세요." },
         { status: 400 }
@@ -30,25 +30,20 @@ export async function POST(request) {
 
 사용자의 문장을 상황과 원하는 말투에 맞게 자연스럽게 바꿔 줘.
 
-[상황]
-${situation || "일반적인 대화"}
+상황: ${situation || "일반적인 대화"}
+원하는 말투: ${tone || "부드러운 쿠션어"}
 
-[원하는 말투]
-${tone || "부드러운 쿠션어"}
-
-[규칙]
+규칙:
 1. 원문의 핵심 의미와 의도를 유지해.
-2. 원문에 없는 사실이나 약속을 임의로 추가하지 마.
-3. 상황에 맞는 쿠션어와 자연스러운 한국어를 사용해.
-4. 필요 이상으로 길거나 과장된 표현은 피하고 실제로 사용할 수 있게 작성해.
-5. 상대방을 무시하거나 지나치게 비굴한 표현은 사용하지 마.
-6. 변환 결과와 수정 이유를 한국어로 작성해.
-7. 결과는 반드시 JSON 형식으로만 반환해.
-8. JSON 형식은 다음과 같아:
-{
-  "result": "변환된 문장",
-  "explanation": "어떤 표현을 왜 바꾸었는지에 대한 짧은 설명"
-}
+2. 원문에 없는 사실이나 약속을 추가하지 마.
+3. 자연스럽고 실제로 사용할 수 있는 한국어를 사용해.
+4. 필요 이상으로 길거나 과장된 표현은 피 해.
+5. 변환 결과와 수정 이유를 작성해.
+6. 반드시 다음 JSON 형식으로 답해.
+{"result":"변환된 문장","explanation":"수정 이유"}
+
+사용자 원문:
+${text}
 `;
 
     const response = await fetch(
@@ -78,22 +73,35 @@ ${tone || "부드러운 쿠션어"}
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Gemini API error:", data);
+      console.error("Gemini API error:", {
+        status: response.status,
+        details: data.error?.message
+      });
 
       return Response.json(
-        { error: "AI 변환에 실패했어요. 잠시 후 다시 시도해 주세요." },
+        {
+          error: `Gemini API 오류 (${response.status}): ${
+            data.error?.message || "응답을 받지 못했어요."
+          }`
+        },
         { status: 502 }
       );
     }
 
-    const output = data.candidates?.[0]?.content?.parts
+    const candidate = data.candidates?.[0];
+    const output = candidate?.content?.parts
       ?.map((part) => part.text || "")
       .join("")
       .trim();
 
     if (!output) {
+      console.error("Gemini empty response:", {
+        finishReason: candidate?.finishReason,
+        promptFeedback: data.promptFeedback
+      });
+
       return Response.json(
-        { error: "AI 결과를 받지 못했어요. 다시 시도해 주세요." },
+        { error: "AI가 결과를 반환하지 않았어요. 다시 시도해 주세요." },
         { status: 502 }
       );
     }
@@ -101,15 +109,26 @@ ${tone || "부드러운 쿠션어"}
     let parsed;
 
     try {
-      parsed = JSON.parse(output);
+      const cleanedOutput = output
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, "")
+        .trim();
+
+      parsed = JSON.parse(cleanedOutput);
     } catch {
-      return Response.json(
-        { error: "AI 결과를 읽지 못했어요. 다시 시도해 주세요." },
-        { status: 502 }
-      );
+      console.error("Gemini JSON parse error:", output);
+
+      // JSON이 아닌 응답도 결과로 사용할 수 있도록 처리
+      parsed = {
+        result: output,
+        explanation: "입력한 문장을 바탕으로 AI가 응답했어요."
+      };
     }
 
-    if (!parsed.result) {
+    if (
+      !parsed.result ||
+      typeof parsed.result !== "string"
+    ) {
       return Response.json(
         { error: "변환 결과가 비어 있어요. 다시 시도해 주세요." },
         { status: 502 }
@@ -118,7 +137,10 @@ ${tone || "부드러운 쿠션어"}
 
     return Response.json({
       result: parsed.result,
-      explanation: parsed.explanation || ""
+      explanation:
+        typeof parsed.explanation === "string"
+          ? parsed.explanation
+          : ""
     });
   } catch (error) {
     console.error("Convert API error:", error);
